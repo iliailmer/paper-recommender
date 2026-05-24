@@ -1,0 +1,30 @@
+# Laptop-first config. Paths are relative to the project root (this file's dir).
+# Pi deployment will override paths to /home/pi/arxiv-recommender/...
+
+[storage]
+db_path = "data/papers.db"
+
+[profile]
+bib_path = "library.bib"
+recency_halflife_days = 180     # exponential decay half-life
+use_collection_profiles = true
+
+[fetch]
+categories = ["cs.LG", "cs.AI", "stat.ML", "cs.CL", "cs.DC", "math.NA", "cs.MS"]
+days_back = 7
+max_fetch = 500
+min_score = 0.30
+top_k = 15
+schedule = "0 3 * * *"          # cron expression
+
+[s2]
+api_key = ""                    # optional, raises rate limit
+batch_size = 500
+
+[server]
+host = "127.0.0.1"              # laptop-first; Pi uses 0.0.0.0
+port = 8000
+
+[telegram]
+enabled = false
+token = ""
