@@ -4,13 +4,19 @@ version = "0.1.0"
 description = "Personal arXiv paper recommender (SPECTER2 embeddings + cosine similarity)"
 requires-python = ">=3.11"
 dependencies = [
+    "arxiv>=2.4,<5",
     "bibtexparser>=1.4,<2",
+    "fastapi>=0.136.3",
     "numpy>=2.4.6",
-    "requests>=2.34.2",
+    "requests>=2.32,<2.34",  # capped to coexist with arxiv's requests pin
+    "uvicorn[standard]>=0.48.0",
 ]
 
 [project.scripts]
 arxiv-ingest = "arxiv_recommender.ingest:main"
+arxiv-embed = "arxiv_recommender.embed:main"
+arxiv-fetch = "arxiv_recommender.fetch:main"
+arxiv-serve = "arxiv_recommender.server:main"
 
 [build-system]
 requires = ["hatchling"]

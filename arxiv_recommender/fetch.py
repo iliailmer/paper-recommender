@@ -1,0 +1,141 @@
+"""Nightly job: fetch recent arXiv papers, embed them, score, save a digest.
+
+    uv run arxiv-fetch                      # uses [fetch] config defaults
+    uv run arxiv-fetch --days 3 --max 100   # override window / cap
+
+Pipeline:
+    arXiv API search  ->  insert new (in_library=0)
+                      ->  fetch SPECTER2 embeddings for anything missing
+                      ->  score non-library papers against the library centroid
+                      ->  persist the ranked list as a digest
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+from datetime import datetime, timezone
+from pathlib import Path
+
+from datetime import date
+
+from . import arxiv_api, db, recommend
+from .config import load_config
+from .format import format_recommendations
+from .s2 import S2Client
+
+
+def run_fetch(
+    db_path: Path,
+    categories: list[str],
+    days_back: int,
+    max_fetch: int,
+    top_k: int,
+    min_score: float,
+    api_key: str = "",
+    batch_size: int = 500,
+) -> dict:
+    conn = db.connect(db_path)
+    try:
+        db.init_db(conn)
+
+        # 1. Fetch + store new papers.
+        fetched = arxiv_api.search_recent(categories, days_back, max_fetch)
+        now = datetime.now(timezone.utc).isoformat()
+        new_count = 0
+        for p in fetched:
+            inserted = db.insert_fetched_paper(conn, {
+                "arxiv_id": p["arxiv_id"],
+                "title": p["title"],
+                "authors": json.dumps(p["authors"]),
+                "abstract": p["abstract"],
+                "categories": json.dumps(p["categories"]),
+                "published_date": p["published_date"],
+                "fetched_date": now,
+            })
+            new_count += inserted
+        conn.commit()
+
+        # 2. Embed anything still missing a vector (library + new).
+        missing_ids = db.ids_missing_embeddings(conn, library_only=False)
+        embedded = 0
+        no_embedding: list[str] = []
+        if missing_ids:
+            client = S2Client(api_key=api_key, batch_size=batch_size)
+            results, no_embedding = client.fetch_embeddings(missing_ids)
+            for r in results:
+                db.set_embedding(conn, r.arxiv_id, r.vector, r.s2_paper_id)
+            embedded = len(results)
+            conn.commit()
+
+        # 3. Score + 4. persist digest.
+        recs = recommend.recommend(conn, top=top_k, min_score=min_score)
+        params = {
+            "categories": categories,
+            "days_back": days_back,
+            "top_k": top_k,
+            "min_score": min_score,
+        }
+        db.save_digest(conn, params, recs)
+        conn.commit()
+
+        with_emb, total = db.embedding_coverage(conn)
+        return {
+            "fetched": len(fetched),
+            "new": new_count,
+            "embedded": embedded,
+            "no_embedding": len(no_embedding),
+            "recommended": len(recs),
+            "recs": recs,
+            "coverage": (with_emb, total),
+        }
+    finally:
+        conn.close()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Nightly arXiv fetch + score + digest.")
+    parser.add_argument("--config", type=Path, default=None)
+    parser.add_argument("--db", type=Path, default=None)
+    parser.add_argument("--days", type=int, default=None, help="Look-back window")
+    parser.add_argument("--max", type=int, default=None, help="Max papers to fetch")
+    parser.add_argument("--top", type=int, default=None, help="Digest size")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Print only the digest markdown.")
+    args = parser.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO if args.verbose else logging.WARNING,
+        format="%(levelname)s %(message)s",
+    )
+
+    cfg = load_config(args.config)
+    fetch = cfg.section("fetch")
+    s2 = cfg.section("s2")
+
+    summary = run_fetch(
+        db_path=args.db or cfg.db_path,
+        categories=fetch.get("categories", []),
+        days_back=args.days or fetch.get("days_back", 7),
+        max_fetch=args.max or fetch.get("max_fetch", 500),
+        top_k=args.top or fetch.get("top_k", 15),
+        min_score=fetch.get("min_score", 0.0),
+        api_key=s2.get("api_key", ""),
+        batch_size=s2.get("batch_size", 500),
+    )
+
+    if not args.quiet:
+        with_emb, total = summary["coverage"]
+        print(f"Fetched {summary['fetched']} papers ({summary['new']} new). "
+              f"Embedded {summary['embedded']} (+{summary['no_embedding']} unavailable). "
+              f"Coverage {with_emb}/{total}.\n")
+    print(format_recommendations(
+        summary["recs"],
+        header=f"arXiv digest — {date.today().isoformat()}",
+    ))
+
+
+if __name__ == "__main__":
+    main()

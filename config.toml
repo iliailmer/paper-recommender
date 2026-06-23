@@ -11,8 +11,8 @@ use_collection_profiles = true
 
 [fetch]
 categories = ["cs.LG", "cs.AI", "stat.ML", "cs.CL", "cs.DC", "math.NA", "cs.MS"]
-days_back = 7
-max_fetch = 500
+days_back = 14
+max_fetch = 3000
 min_score = 0.30
 top_k = 15
 schedule = "0 3 * * *"          # cron expression

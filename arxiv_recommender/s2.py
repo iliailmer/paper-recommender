@@ -65,6 +65,10 @@ class S2Client:
             )
             if resp.status_code == 200:
                 return resp.json()
+            # 400 "No valid paper ids given" means none of the IDs resolved;
+            # treat every requested ID as missing rather than erroring.
+            if resp.status_code == 400 and "no valid paper ids" in resp.text.lower():
+                return [None] * len(ids)
             if resp.status_code in (429, 500, 502, 503, 504) and attempt < self.max_retries:
                 retry_after = resp.headers.get("Retry-After")
                 if retry_after:
