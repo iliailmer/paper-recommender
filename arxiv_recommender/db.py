@@ -62,6 +62,20 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _migrate(conn)
+    conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Run schema migrations, handling columns that may already exist."""
+    for col, typedef in [
+        ("citation_count", "INTEGER"),
+        ("citation_count_updated", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE papers ADD COLUMN {col} {typedef}")
+        except sqlite3.OperationalError:
+            pass  # column already exists
     conn.commit()
 
 
@@ -112,10 +126,18 @@ def set_embedding(
     arxiv_id: str,
     vector: np.ndarray,
     s2_paper_id: str | None,
+    citation_count: int | None = None,
 ) -> None:
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
     conn.execute(
-        "UPDATE papers SET embedding = ?, s2_paper_id = ? WHERE arxiv_id = ?",
-        (serialize_embedding(vector), s2_paper_id, arxiv_id),
+        "UPDATE papers SET embedding = ?, s2_paper_id = ?, "
+        "citation_count = COALESCE(?, citation_count), "
+        "citation_count_updated = CASE WHEN ? IS NOT NULL THEN ? ELSE citation_count_updated END "
+        "WHERE arxiv_id = ?",
+        (serialize_embedding(vector), s2_paper_id,
+         citation_count, citation_count, now,
+         arxiv_id),
     )
 
 
