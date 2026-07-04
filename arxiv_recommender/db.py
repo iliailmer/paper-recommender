@@ -74,8 +74,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     ]:
         try:
             conn.execute(f"ALTER TABLE papers ADD COLUMN {col} {typedef}")
-        except sqlite3.OperationalError:
-            pass  # column already exists
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e):
+                raise
     conn.commit()
 
 

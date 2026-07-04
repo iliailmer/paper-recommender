@@ -203,12 +203,11 @@ def recommend_hot_similar(
     # Normalize both to [0, 1]
     def _norm01(arr: np.ndarray) -> np.ndarray:
         lo, hi = arr.min(), arr.max()
-        return (arr - lo) / (hi - lo) if hi > lo else np.zeros_like(arr)
+        return (arr - lo) / (hi - lo) if hi > lo else np.ones_like(arr)
 
     combined = alpha * _norm01(cosine_scores) + (1 - alpha) * _norm01(rate_arr)
     scored = list(zip(ids, combined.tolist()))
     scored.sort(key=lambda x: x[1], reverse=True)
-    scored = [(aid, s) for aid, s in scored if s >= min_score]
     return _hydrate(conn, scored[:top])
 
 
