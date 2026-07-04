@@ -35,6 +35,7 @@ def run_fetch(
     min_score: float,
     api_key: str = "",
     batch_size: int = 500,
+    mode: str = "default",
 ) -> dict:
     conn = db.connect(db_path)
     try:
@@ -70,7 +71,12 @@ def run_fetch(
             conn.commit()
 
         # 3. Score + 4. persist digest.
-        recs = recommend.recommend(conn, top=top_k, min_score=min_score)
+        if mode == "hot":
+            recs = recommend.recommend_hot(conn, top=top_k)
+        elif mode == "hot_similar":
+            recs = recommend.recommend_hot_similar(conn, top=top_k, min_score=min_score)
+        else:
+            recs = recommend.recommend(conn, top=top_k, min_score=min_score)
         params = {
             "categories": categories,
             "days_back": days_back,
@@ -104,6 +110,11 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--quiet", action="store_true",
                         help="Print only the digest markdown.")
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument("--hot", action="store_true",
+                            help="Rank by citation rate (citations / days since published).")
+    mode_group.add_argument("--hot-similar", action="store_true",
+                            help="50/50 blend of citation rate and cosine similarity.")
     args = parser.parse_args()
 
     if not args.verbose:
@@ -114,6 +125,13 @@ def main() -> None:
     fetch = cfg.section("fetch")
     s2 = cfg.section("s2")
 
+    if args.hot:
+        mode = "hot"
+    elif args.hot_similar:
+        mode = "hot_similar"
+    else:
+        mode = "default"
+
     summary = run_fetch(
         db_path=args.db or cfg.db_path,
         categories=fetch.get("categories", []),
@@ -123,6 +141,7 @@ def main() -> None:
         min_score=fetch.get("min_score", 0.0),
         api_key=s2.get("api_key", ""),
         batch_size=s2.get("batch_size", 500),
+        mode=mode,
     )
 
     if not args.quiet:
@@ -130,9 +149,14 @@ def main() -> None:
         print(f"Fetched {summary['fetched']} papers ({summary['new']} new). "
               f"Embedded {summary['embedded']} (+{summary['no_embedding']} unavailable). "
               f"Coverage {with_emb}/{total}.\n")
+    mode_label = {"hot": "hot", "hot_similar": "hot+similar"}.get(mode, "")
+    header_parts = ["arXiv digest"]
+    if mode_label:
+        header_parts.append(mode_label)
+    header_parts.append(date.today().isoformat())
     print(format_recommendations(
         summary["recs"],
-        header=f"arXiv digest — {date.today().isoformat()}",
+        header=" · ".join(header_parts),
     ))
 
 
