@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -122,55 +124,61 @@ def ids_missing_embeddings(conn: sqlite3.Connection, library_only: bool = True) 
     return [row["arxiv_id"] for row in conn.execute(sql).fetchall()]
 
 
-def set_embedding(
+def set_embeddings(
     conn: sqlite3.Connection,
-    arxiv_id: str,
-    vector: np.ndarray,
-    s2_paper_id: str | None,
-    citation_count: int | None = None,
+    results: list[tuple[str, np.ndarray, str | None, int | None]],
 ) -> None:
-    from datetime import datetime, timezone
+    """Bulk-store embeddings (and citation counts) for many papers in one round-trip.
+
+    Each tuple is (arxiv_id, vector, s2_paper_id, citation_count).
+    """
+    if not results:
+        return
     now = datetime.now(timezone.utc).isoformat()
-    conn.execute(
+    conn.executemany(
         "UPDATE papers SET embedding = ?, s2_paper_id = ?, "
         "citation_count = COALESCE(?, citation_count), "
         "citation_count_updated = CASE WHEN ? IS NOT NULL THEN ? ELSE citation_count_updated END "
         "WHERE arxiv_id = ?",
-        (serialize_embedding(vector), s2_paper_id,
-         citation_count, citation_count, now,
-         arxiv_id),
+        [
+            (serialize_embedding(vector), s2_paper_id, citation_count, citation_count, now, arxiv_id)
+            for arxiv_id, vector, s2_paper_id, citation_count in results
+        ],
     )
 
 
-def insert_fetched_paper(conn: sqlite3.Connection, paper: dict) -> bool:
-    """Insert a newly-fetched (non-library) paper if absent.
+def insert_fetched_papers(conn: sqlite3.Connection, papers: list[dict]) -> int:
+    """Bulk-insert newly-fetched (non-library) papers in one round-trip.
 
     Uses ON CONFLICT DO NOTHING so it never overwrites an existing row —
     importantly, it won't downgrade a paper already marked in_library.
-    Returns True if a new row was inserted.
+    Returns the number of rows actually inserted.
     """
-    cur = conn.execute(
+    if not papers:
+        return 0
+    cur = conn.executemany(
         "INSERT INTO papers "
         "(arxiv_id, title, authors, abstract, categories, published_date, "
         " fetched_date, in_library) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, 0) "
         "ON CONFLICT(arxiv_id) DO NOTHING",
-        (
-            paper["arxiv_id"],
-            paper["title"],
-            paper["authors"],
-            paper["abstract"],
-            paper["categories"],
-            paper["published_date"],
-            paper["fetched_date"],
-        ),
+        [
+            (
+                p["arxiv_id"],
+                p["title"],
+                p["authors"],
+                p["abstract"],
+                p["categories"],
+                p["published_date"],
+                p["fetched_date"],
+            )
+            for p in papers
+        ],
     )
-    return cur.rowcount > 0
+    return cur.rowcount
 
 
 def save_digest(conn: sqlite3.Connection, params: dict, results: list[dict]) -> None:
-    import json
-    from datetime import datetime, timezone
     conn.execute(
         "INSERT INTO digests (created_date, params, results) VALUES (?, ?, ?)",
         (
@@ -182,7 +190,6 @@ def save_digest(conn: sqlite3.Connection, params: dict, results: list[dict]) -> 
 
 
 def latest_digest(conn: sqlite3.Connection) -> dict | None:
-    import json
     row = conn.execute(
         "SELECT created_date, params, results FROM digests ORDER BY id DESC LIMIT 1"
     ).fetchone()

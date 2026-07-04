@@ -33,8 +33,9 @@ def embed(db_path: Path, api_key: str, batch_size: int, library_only: bool = Tru
         client = S2Client(api_key=api_key, batch_size=batch_size)
         results, missing = client.fetch_embeddings(ids)
 
-        for r in results:
-            db.set_embedding(conn, r.arxiv_id, r.vector, r.s2_paper_id)
+        db.set_embeddings(conn, [
+            (r.arxiv_id, r.vector, r.s2_paper_id, r.citation_count) for r in results
+        ])
         conn.commit()
 
         with_emb, total = db.embedding_coverage(conn)

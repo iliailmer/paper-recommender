@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import date, timedelta
 
 import numpy as np
 
@@ -24,6 +25,22 @@ def _unit_rows(mat: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
     return mat / norms
+
+
+def _norm01(arr: np.ndarray) -> np.ndarray:
+    """Min-max normalize to [0, 1]; a flat range normalizes to all-ones."""
+    lo, hi = arr.min(), arr.max()
+    return (arr - lo) / (hi - lo) if hi > lo else np.ones_like(arr)
+
+
+def _citation_rate(citation_count: int, published_date: str, today: date) -> float | None:
+    """Citations per day since publication; None if the date is unparseable."""
+    try:
+        pub = date.fromisoformat(published_date)
+    except ValueError:
+        return None
+    age = max(1, (today - pub).days)
+    return citation_count / age
 
 
 def build_centroid(conn: sqlite3.Connection) -> tuple[np.ndarray | None, int]:
@@ -60,7 +77,6 @@ def _hydrate(conn: sqlite3.Connection, scored: list[tuple[str, float]]) -> list[
     """Attach metadata to (arxiv_id, score) pairs, preserving order."""
     if not scored:
         return []
-    id_to_score = dict(scored)
     placeholders = ", ".join("?" for _ in scored)
     rows = conn.execute(
         f"SELECT arxiv_id, title, authors, categories, published_date, in_library "
@@ -119,7 +135,6 @@ def recommend(
         extra += f" AND ({clauses})"
         params += [f'%"{c}"%' for c in categories]
     if days:
-        from datetime import date, timedelta
         cutoff = (date.today() - timedelta(days=days)).isoformat()
         extra += " AND published_date >= ?"
         params.append(cutoff)
@@ -133,8 +148,6 @@ def recommend(
 
 def recommend_hot(conn: sqlite3.Connection, top: int = 15) -> list[dict]:
     """Top non-library papers ranked by citation rate (citations / days since published)."""
-    from datetime import date
-
     rows = conn.execute(
         "SELECT arxiv_id, citation_count, published_date FROM papers "
         "WHERE in_library = 0 AND citation_count IS NOT NULL AND published_date IS NOT NULL"
@@ -145,13 +158,9 @@ def recommend_hot(conn: sqlite3.Connection, top: int = 15) -> list[dict]:
     today = date.today()
     scored: list[tuple[str, float]] = []
     for r in rows:
-        try:
-            pub = date.fromisoformat(r["published_date"])
-        except ValueError:
-            continue
-        age = max(1, (today - pub).days)
-        rate = r["citation_count"] / age
-        scored.append((r["arxiv_id"], rate))
+        rate = _citation_rate(r["citation_count"], r["published_date"], today)
+        if rate is not None:
+            scored.append((r["arxiv_id"], rate))
 
     scored.sort(key=lambda x: x[1], reverse=True)
     return _hydrate(conn, scored[:top])
@@ -160,12 +169,9 @@ def recommend_hot(conn: sqlite3.Connection, top: int = 15) -> list[dict]:
 def recommend_hot_similar(
     conn: sqlite3.Connection,
     top: int = 15,
-    min_score: float = 0.0,
     alpha: float = 0.5,
 ) -> list[dict]:
     """Top non-library papers by 50/50 blend of cosine similarity and citation rate."""
-    from datetime import date
-
     centroid, _ = build_centroid(conn)
     if centroid is None:
         return []
@@ -184,14 +190,12 @@ def recommend_hot_similar(
     rates: list[float] = []
 
     for r in rows:
-        try:
-            pub = date.fromisoformat(r["published_date"])
-        except ValueError:
+        rate = _citation_rate(r["citation_count"], r["published_date"], today)
+        if rate is None:
             continue
-        age = max(1, (today - pub).days)
         ids.append(r["arxiv_id"])
         vectors.append(db.deserialize_embedding(r["embedding"]))
-        rates.append(r["citation_count"] / age)
+        rates.append(rate)
 
     if not ids:
         return []
@@ -199,11 +203,6 @@ def recommend_hot_similar(
     mat = np.stack(vectors)
     cosine_scores = _unit_rows(mat) @ centroid  # shape (N,)
     rate_arr = np.array(rates, dtype=np.float64)
-
-    # Normalize both to [0, 1]
-    def _norm01(arr: np.ndarray) -> np.ndarray:
-        lo, hi = arr.min(), arr.max()
-        return (arr - lo) / (hi - lo) if hi > lo else np.ones_like(arr)
 
     combined = alpha * _norm01(cosine_scores) + (1 - alpha) * _norm01(rate_arr)
     scored = list(zip(ids, combined.tolist()))

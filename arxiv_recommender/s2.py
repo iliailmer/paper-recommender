@@ -76,7 +76,7 @@ class S2Client:
                     wait = min(self.base_backoff * (2 ** attempt), self.max_backoff)
                     wait += random.uniform(0, wait * 0.25)  # jitter
                 logger.warning(
-                    "S2 %s (attempt %d/%d); backing off %.1fs",
+                    "S2 {} (attempt {}/{}); backing off {:.1f}s",
                     resp.status_code, attempt + 1, self.max_retries, wait,
                 )
                 time.sleep(wait)
@@ -127,6 +127,6 @@ class S2Client:
             return None
         vec = np.asarray(emb["vector"], dtype=np.float32)
         if vec.shape != (EMBEDDING_DIM,):
-            logger.warning("unexpected embedding dim %s; skipping", vec.shape)
+            logger.warning("unexpected embedding dim {}; skipping", vec.shape)
             return None
         return vec

@@ -44,9 +44,8 @@ def run_fetch(
         # 1. Fetch + store new papers.
         fetched = arxiv_api.search_recent(categories, days_back, max_fetch)
         now = datetime.now(timezone.utc).isoformat()
-        new_count = 0
-        for p in fetched:
-            inserted = db.insert_fetched_paper(conn, {
+        new_count = db.insert_fetched_papers(conn, [
+            {
                 "arxiv_id": p["arxiv_id"],
                 "title": p["title"],
                 "authors": json.dumps(p["authors"]),
@@ -54,8 +53,9 @@ def run_fetch(
                 "categories": json.dumps(p["categories"]),
                 "published_date": p["published_date"],
                 "fetched_date": now,
-            })
-            new_count += inserted
+            }
+            for p in fetched
+        ])
         conn.commit()
 
         # 2. Embed anything still missing a vector (library + new).
@@ -65,8 +65,9 @@ def run_fetch(
         if missing_ids:
             client = S2Client(api_key=api_key, batch_size=batch_size)
             results, no_embedding = client.fetch_embeddings(missing_ids)
-            for r in results:
-                db.set_embedding(conn, r.arxiv_id, r.vector, r.s2_paper_id, r.citation_count)
+            db.set_embeddings(conn, [
+                (r.arxiv_id, r.vector, r.s2_paper_id, r.citation_count) for r in results
+            ])
             embedded = len(results)
             conn.commit()
 
@@ -74,7 +75,7 @@ def run_fetch(
         if mode == "hot":
             recs = recommend.recommend_hot(conn, top=top_k)
         elif mode == "hot_similar":
-            recs = recommend.recommend_hot_similar(conn, top=top_k, min_score=min_score)
+            recs = recommend.recommend_hot_similar(conn, top=top_k)
         else:
             recs = recommend.recommend(conn, top=top_k, min_score=min_score)
         params = {

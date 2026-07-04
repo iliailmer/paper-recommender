@@ -60,5 +60,5 @@ def search_recent(
         if len(papers) >= max_fetch:
             break
 
-    logger.info("arXiv returned %d papers in window", len(papers))
+    logger.info("arXiv returned {} papers in window", len(papers))
     return papers
