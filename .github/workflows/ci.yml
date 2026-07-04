@@ -26,4 +26,4 @@ jobs:
         run: uv run vulture arxiv_recommender
 
       - name: Test
-        run: uv run pytest
+        run: uv run pytest --benchmark-disable

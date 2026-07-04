@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -40,6 +41,7 @@ def run_fetch(
     conn = db.connect(db_path)
     try:
         db.init_db(conn)
+        t_start = time.perf_counter()
 
         # 1. Fetch + store new papers.
         fetched = arxiv_api.search_recent(categories, days_back, max_fetch)
@@ -57,6 +59,11 @@ def run_fetch(
             for p in fetched
         ])
         conn.commit()
+        t_fetch = time.perf_counter()
+        logger.info(
+            "arXiv fetch + store: {:.2f}s ({} fetched, {} new)",
+            t_fetch - t_start, len(fetched), new_count,
+        )
 
         # 2. Embed anything still missing a vector (library + new).
         missing_ids = db.ids_missing_embeddings(conn, library_only=False)
@@ -70,6 +77,11 @@ def run_fetch(
             ])
             embedded = len(results)
             conn.commit()
+        t_embed = time.perf_counter()
+        logger.info(
+            "S2 embed: {:.2f}s ({} embedded, {} unavailable)",
+            t_embed - t_fetch, embedded, len(no_embedding),
+        )
 
         # 3. Score + 4. persist digest.
         if mode == "hot":
@@ -86,6 +98,9 @@ def run_fetch(
         }
         db.save_digest(conn, params, recs)
         conn.commit()
+        t_score = time.perf_counter()
+        logger.info("Score + save digest: {:.2f}s ({} recs)", t_score - t_embed, len(recs))
+        logger.info("Total: {:.2f}s", t_score - t_start)
 
         with_emb, total = db.embedding_coverage(conn)
         return {
@@ -96,6 +111,12 @@ def run_fetch(
             "recommended": len(recs),
             "recs": recs,
             "coverage": (with_emb, total),
+            "timings": {
+                "fetch": t_fetch - t_start,
+                "embed": t_embed - t_fetch,
+                "score": t_score - t_embed,
+                "total": t_score - t_start,
+            },
         }
     finally:
         conn.close()

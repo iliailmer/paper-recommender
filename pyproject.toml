@@ -29,6 +29,7 @@ packages = ["arxiv_recommender"]
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    "pytest-benchmark>=5.2.3",
     "ruff>=0.15.20",
     "vulture>=2.16",
 ]
