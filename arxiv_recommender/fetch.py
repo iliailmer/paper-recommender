@@ -14,11 +14,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
-from datetime import datetime, timezone
+import sys
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-from datetime import date
+from loguru import logger
 
 from . import arxiv_api, db, recommend
 from .config import load_config
@@ -65,7 +65,7 @@ def run_fetch(
             client = S2Client(api_key=api_key, batch_size=batch_size)
             results, no_embedding = client.fetch_embeddings(missing_ids)
             for r in results:
-                db.set_embedding(conn, r.arxiv_id, r.vector, r.s2_paper_id)
+                db.set_embedding(conn, r.arxiv_id, r.vector, r.s2_paper_id, r.citation_count)
             embedded = len(results)
             conn.commit()
 
@@ -106,10 +106,9 @@ def main() -> None:
                         help="Print only the digest markdown.")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO if args.verbose else logging.WARNING,
-        format="%(levelname)s %(message)s",
-    )
+    if not args.verbose:
+        logger.remove()
+        logger.add(sys.stderr, level="WARNING")
 
     cfg = load_config(args.config)
     fetch = cfg.section("fetch")

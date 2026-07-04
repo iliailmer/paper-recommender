@@ -11,18 +11,16 @@ An API key (config [s2] api_key) is optional; when present it is sent as the
 
 from __future__ import annotations
 
-import logging
 import random
 import time
 from dataclasses import dataclass
 
 import numpy as np
 import requests
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 BATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/batch"
-FIELDS = "paperId,embedding.specter_v2"
+FIELDS = "paperId,embedding.specter_v2,citationCount"
 EMBEDDING_DIM = 768
 
 
@@ -31,6 +29,7 @@ class EmbeddingResult:
     arxiv_id: str
     vector: np.ndarray  # float32, shape (768,)
     s2_paper_id: str | None
+    citation_count: int | None = None
 
 
 class S2Client:
@@ -110,7 +109,12 @@ class S2Client:
                     missing.append(arxiv_id)
                 else:
                     results.append(
-                        EmbeddingResult(arxiv_id, vec, item.get("paperId"))
+                        EmbeddingResult(
+                            arxiv_id,
+                            vec,
+                            item.get("paperId"),
+                            citation_count=item.get("citationCount"),
+                        )
                     )
         return results, missing
 
