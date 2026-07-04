@@ -11,8 +11,10 @@ re-tries them (e.g. once S2 indexes a very new paper).
 from __future__ import annotations
 
 import argparse
-import logging
+import sys
 from pathlib import Path
+
+from loguru import logger
 
 from . import db
 from .config import load_config
@@ -54,10 +56,9 @@ def main() -> None:
     parser.add_argument("-v", "--verbose", action="store_true", help="Show backoff/retry logs")
     args = parser.parse_args()
 
-    logging.basicConfig(
-        level=logging.INFO if args.verbose else logging.WARNING,
-        format="%(levelname)s %(message)s",
-    )
+    if not args.verbose:
+        logger.remove()
+        logger.add(sys.stderr, level="WARNING")
 
     cfg = load_config(args.config)
     db_path = args.db or cfg.db_path

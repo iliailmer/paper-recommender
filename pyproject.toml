@@ -7,6 +7,7 @@ dependencies = [
     "arxiv>=2.4,<5",
     "bibtexparser>=1.4,<2",
     "fastapi>=0.136.3",
+    "loguru>=0.7.3",
     "numpy>=2.4.6",
     "requests>=2.32,<2.34",  # capped to coexist with arxiv's requests pin
     "uvicorn[standard]>=0.48.0",

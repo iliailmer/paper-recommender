@@ -6,13 +6,11 @@ Unlike the BibTeX import, papers from here carry proper arXiv category *codes*
 
 from __future__ import annotations
 
-import logging
 import re
 from datetime import datetime, timedelta, timezone
 
 import arxiv
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 _VERSION_RE = re.compile(r"v\d+$", re.IGNORECASE)
 
