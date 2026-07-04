@@ -131,6 +131,87 @@ def recommend(
     return _hydrate(conn, _rank(ids, scores, top, min_score))
 
 
+def recommend_hot(conn: sqlite3.Connection, top: int = 15) -> list[dict]:
+    """Top non-library papers ranked by citation rate (citations / days since published)."""
+    from datetime import date
+
+    rows = conn.execute(
+        "SELECT arxiv_id, citation_count, published_date FROM papers "
+        "WHERE in_library = 0 AND citation_count IS NOT NULL AND published_date IS NOT NULL"
+    ).fetchall()
+    if not rows:
+        return []
+
+    today = date.today()
+    scored: list[tuple[str, float]] = []
+    for r in rows:
+        try:
+            pub = date.fromisoformat(r["published_date"])
+        except ValueError:
+            continue
+        age = max(1, (today - pub).days)
+        rate = r["citation_count"] / age
+        scored.append((r["arxiv_id"], rate))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return _hydrate(conn, scored[:top])
+
+
+def recommend_hot_similar(
+    conn: sqlite3.Connection,
+    top: int = 15,
+    min_score: float = 0.0,
+    alpha: float = 0.5,
+) -> list[dict]:
+    """Top non-library papers by 50/50 blend of cosine similarity and citation rate."""
+    from datetime import date
+
+    centroid, _ = build_centroid(conn)
+    if centroid is None:
+        return []
+
+    rows = conn.execute(
+        "SELECT arxiv_id, embedding, citation_count, published_date FROM papers "
+        "WHERE in_library = 0 AND embedding IS NOT NULL "
+        "AND citation_count IS NOT NULL AND published_date IS NOT NULL"
+    ).fetchall()
+    if not rows:
+        return []
+
+    today = date.today()
+    ids: list[str] = []
+    vectors: list[np.ndarray] = []
+    rates: list[float] = []
+
+    for r in rows:
+        try:
+            pub = date.fromisoformat(r["published_date"])
+        except ValueError:
+            continue
+        age = max(1, (today - pub).days)
+        ids.append(r["arxiv_id"])
+        vectors.append(db.deserialize_embedding(r["embedding"]))
+        rates.append(r["citation_count"] / age)
+
+    if not ids:
+        return []
+
+    mat = np.stack(vectors)
+    cosine_scores = _unit_rows(mat) @ centroid  # shape (N,)
+    rate_arr = np.array(rates, dtype=np.float64)
+
+    # Normalize both to [0, 1]
+    def _norm01(arr: np.ndarray) -> np.ndarray:
+        lo, hi = arr.min(), arr.max()
+        return (arr - lo) / (hi - lo) if hi > lo else np.zeros_like(arr)
+
+    combined = alpha * _norm01(cosine_scores) + (1 - alpha) * _norm01(rate_arr)
+    scored = list(zip(ids, combined.tolist()))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    scored = [(aid, s) for aid, s in scored if s >= min_score]
+    return _hydrate(conn, scored[:top])
+
+
 def similar(
     conn: sqlite3.Connection,
     arxiv_id: str,
