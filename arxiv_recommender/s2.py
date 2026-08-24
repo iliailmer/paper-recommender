@@ -12,7 +12,9 @@ An API key (config [s2] api_key) is optional; when present it is sent as the
 from __future__ import annotations
 
 import random
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -73,32 +75,50 @@ class S2Client:
                 if retry_after:
                     wait = float(retry_after)
                 else:
-                    wait = min(self.base_backoff * (2 ** attempt), self.max_backoff)
+                    wait = min(self.base_backoff * (2**attempt), self.max_backoff)
                     wait += random.uniform(0, wait * 0.25)  # jitter
                 logger.warning(
                     "S2 {} (attempt {}/{}); backing off {:.1f}s",
-                    resp.status_code, attempt + 1, self.max_retries, wait,
+                    resp.status_code,
+                    attempt + 1,
+                    self.max_retries,
+                    wait,
                 )
                 time.sleep(wait)
                 continue
             resp.raise_for_status()
         raise RuntimeError(f"S2 batch failed after {self.max_retries} retries")
 
-    def fetch_embeddings(self, arxiv_ids: list[str]) -> tuple[list[EmbeddingResult], list[str]]:
+    def fetch_embeddings(
+        self,
+        arxiv_ids: list[str],
+        progress_cb: Callable[[int, int], None] | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> tuple[list[EmbeddingResult], list[str]]:
         """Fetch SPECTER2 embeddings for arXiv IDs.
 
         Returns (results, missing) where `missing` are IDs S2 had no embedding
         for (unknown paper, or no embedding computed yet for a very new one).
         Result order matches the API's per-item alignment with the request.
+
+        If given, progress_cb(done, total) is called after each batch — batches
+        are up to `batch_size` (default 500) IDs each, so for a typical library
+        this is often a single call reporting 1/1, not fine-grained per-paper
+        progress.
+
+        If given, cancel_event is checked before each batch; when set, stops
+        and returns whatever was accumulated so far. A batch already in
+        flight (an HTTP request can't be aborted mid-call) always completes.
         """
         results: list[EmbeddingResult] = []
         missing: list[str] = []
 
         batches = [
-            arxiv_ids[i : i + self.batch_size]
-            for i in range(0, len(arxiv_ids), self.batch_size)
+            arxiv_ids[i : i + self.batch_size] for i in range(0, len(arxiv_ids), self.batch_size)
         ]
         for n, chunk in enumerate(batches):
+            if cancel_event is not None and cancel_event.is_set():
+                break
             if n > 0:
                 time.sleep(self.polite_interval)
             ids = [f"ARXIV:{a}" for a in chunk]
@@ -116,6 +136,8 @@ class S2Client:
                             citation_count=item.get("citationCount"),
                         )
                     )
+            if progress_cb is not None:
+                progress_cb(n + 1, len(batches))
         return results, missing
 
     @staticmethod
