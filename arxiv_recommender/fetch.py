@@ -15,7 +15,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
 import time
+from collections.abc import Callable
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -37,7 +39,20 @@ def run_fetch(
     api_key: str = "",
     batch_size: int = 500,
     mode: str = "default",
+    progress_cb: Callable[[int, int], None] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict:
+    """Run the nightly pipeline. Returns a summary dict.
+
+    If given, progress_cb(done, total) is called during the embed step — see
+    S2Client.fetch_embeddings for why this is batch-level, not per-paper.
+
+    If given, cancel_event is checked between phases and during the embed
+    step's batch loop. Newly fetched papers already committed to the DB stay
+    (harmless — next run picks up anything still missing an embedding).
+    Scoring/digest-save is skipped once cancelled, since the candidate pool
+    would be incomplete. The result dict includes "cancelled": bool either way.
+    """
     conn = db.connect(db_path)
     try:
         db.init_db(conn)
@@ -65,39 +80,47 @@ def run_fetch(
             t_fetch - t_start, len(fetched), new_count,
         )
 
+        cancelled = cancel_event is not None and cancel_event.is_set()
+
         # 2. Embed anything still missing a vector (library + new).
         missing_ids = db.ids_missing_embeddings(conn, library_only=False)
         embedded = 0
         no_embedding: list[str] = []
-        if missing_ids:
+        if missing_ids and not cancelled:
             client = S2Client(api_key=api_key, batch_size=batch_size)
-            results, no_embedding = client.fetch_embeddings(missing_ids)
+            results, no_embedding = client.fetch_embeddings(
+                missing_ids, progress_cb=progress_cb, cancel_event=cancel_event
+            )
             db.set_embeddings(conn, [
                 (r.arxiv_id, r.vector, r.s2_paper_id, r.citation_count) for r in results
             ])
             embedded = len(results)
             conn.commit()
+            cancelled = cancel_event is not None and cancel_event.is_set()
         t_embed = time.perf_counter()
         logger.info(
             "S2 embed: {:.2f}s ({} embedded, {} unavailable)",
             t_embed - t_fetch, embedded, len(no_embedding),
         )
 
-        # 3. Score + 4. persist digest.
-        if mode == "hot":
-            recs = recommend.recommend_hot(conn, top=top_k)
-        elif mode == "hot_similar":
-            recs = recommend.recommend_hot_similar(conn, top=top_k)
-        else:
-            recs = recommend.recommend(conn, top=top_k, min_score=min_score)
-        params = {
-            "categories": categories,
-            "days_back": days_back,
-            "top_k": top_k,
-            "min_score": min_score,
-        }
-        db.save_digest(conn, params, recs)
-        conn.commit()
+        # 3. Score + 4. persist digest — skipped once cancelled, since the
+        # candidate pool may be missing embeddings the score would need.
+        recs: list[dict] = []
+        if not cancelled:
+            if mode == "hot":
+                recs = recommend.recommend_hot(conn, top=top_k)
+            elif mode == "hot_similar":
+                recs = recommend.recommend_hot_similar(conn, top=top_k)
+            else:
+                recs = recommend.recommend(conn, top=top_k, min_score=min_score)
+            params = {
+                "categories": categories,
+                "days_back": days_back,
+                "top_k": top_k,
+                "min_score": min_score,
+            }
+            db.save_digest(conn, params, recs)
+            conn.commit()
         t_score = time.perf_counter()
         logger.info("Score + save digest: {:.2f}s ({} recs)", t_score - t_embed, len(recs))
         logger.info("Total: {:.2f}s", t_score - t_start)
@@ -111,6 +134,7 @@ def run_fetch(
             "recommended": len(recs),
             "recs": recs,
             "coverage": (with_emb, total),
+            "cancelled": cancelled,
             "timings": {
                 "fetch": t_fetch - t_start,
                 "embed": t_embed - t_fetch,

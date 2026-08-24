@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
 from loguru import logger
@@ -21,17 +23,37 @@ from .config import load_config
 from .s2 import S2Client
 
 
-def embed(db_path: Path, api_key: str, batch_size: int, library_only: bool = True) -> dict:
+def embed(
+    db_path: Path,
+    api_key: str,
+    batch_size: int,
+    library_only: bool = True,
+    progress_cb: Callable[[int, int], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> dict:
+    """Fetch and store missing embeddings. Returns a summary dict.
+
+    If given, progress_cb(done, total) is called after each S2 batch — see
+    S2Client.fetch_embeddings for why this is batch-level, not per-paper.
+    If given, cancel_event stops the run between batches (see
+    S2Client.fetch_embeddings); whatever was fetched before that is stored.
+    The result dict includes "cancelled": bool either way.
+    """
     conn = db.connect(db_path)
     try:
         db.init_db(conn)
         ids = db.ids_missing_embeddings(conn, library_only=library_only)
         if not ids:
             with_emb, total = db.embedding_coverage(conn)
-            return {"requested": 0, "stored": 0, "missing": [], "coverage": (with_emb, total)}
+            return {
+                "requested": 0, "stored": 0, "missing": [], "coverage": (with_emb, total),
+                "cancelled": False,
+            }
 
         client = S2Client(api_key=api_key, batch_size=batch_size)
-        results, missing = client.fetch_embeddings(ids)
+        results, missing = client.fetch_embeddings(
+            ids, progress_cb=progress_cb, cancel_event=cancel_event
+        )
 
         db.set_embeddings(conn, [
             (r.arxiv_id, r.vector, r.s2_paper_id, r.citation_count) for r in results
@@ -44,6 +66,7 @@ def embed(db_path: Path, api_key: str, batch_size: int, library_only: bool = Tru
             "stored": len(results),
             "missing": missing,
             "coverage": (with_emb, total),
+            "cancelled": cancel_event is not None and cancel_event.is_set(),
         }
     finally:
         conn.close()

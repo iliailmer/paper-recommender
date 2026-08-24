@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import threading
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,15 +20,30 @@ from . import bibtex, db
 from .config import load_config
 
 
-def ingest(bib_path: Path, db_path: Path) -> dict:
-    """Parse the library and upsert it. Returns a summary dict."""
+def ingest(
+    bib_path: Path,
+    db_path: Path,
+    progress_cb: Callable[[int, int], None] | None = None,
+    cancel_event: threading.Event | None = None,
+) -> dict:
+    """Parse the library and upsert it. Returns a summary dict.
+
+    If given, progress_cb(done, total) is called after each paper is upserted.
+    If given, cancel_event is checked before each paper; when set, stops and
+    commits whatever was upserted so far. The result dict includes
+    "cancelled": bool either way.
+    """
     papers, skipped = bibtex.parse_library(bib_path)
     fetched_date = datetime.now(timezone.utc).isoformat()
+    total = len(papers)
 
     conn = db.connect(db_path)
     try:
         db.init_db(conn)
-        for paper in papers:
+        ingested = 0
+        for i, paper in enumerate(papers, 1):
+            if cancel_event is not None and cancel_event.is_set():
+                break
             db.upsert_paper(
                 conn,
                 {
@@ -42,15 +59,19 @@ def ingest(bib_path: Path, db_path: Path) -> dict:
                     "date_added": None,  # not present in this export
                 },
             )
+            ingested = i
+            if progress_cb is not None:
+                progress_cb(i, total)
         conn.commit()
         total_in_library = db.library_count(conn)
     finally:
         conn.close()
 
     return {
-        "ingested": len(papers),
+        "ingested": ingested,
         "skipped": skipped,
         "library_total": total_in_library,
+        "cancelled": cancel_event is not None and cancel_event.is_set(),
     }
 
 

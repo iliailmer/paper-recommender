@@ -1,0 +1,124 @@
+{% macro job_banner(name, label, job) %}
+  {% if job %}
+    {% if job.state == 'running' %}
+      <div class="notice job-running">
+        Running: {{ label }}{% if job.progress %} — {{ job.progress.done }}/{{ job.progress.total }}{% endif %}
+        <form method="post" action="/jobs/{{ name }}/cancel" class="inline-form">
+          <button type="submit">Cancel</button>
+        </form>
+      </div>
+    {% elif job.state == 'done' %}
+      <p class="notice job-done">
+        Finished: {{ label }} —
+        {% if name == 'ingest' %}
+          {{ job.result.ingested }} papers ingested (library now {{ job.result.library_total }})
+        {% elif name == 'embed' %}
+          {{ job.result.stored }}/{{ job.result.requested }} embeddings stored
+        {% elif name == 'fetch' %}
+          {{ job.result.new }} new papers ({{ job.result.fetched }} seen, {{ job.result.embedded }} embedded)
+        {% endif %}
+      </p>
+    {% elif job.state == 'cancelled' %}
+      <p class="notice job-cancelled">
+        Cancelled: {{ label }}{% if job.progress %} — stopped after {{ job.progress.done }}/{{ job.progress.total }}{% endif %}.
+        Anything already saved stays; re-run to pick up where it left off.
+      </p>
+    {% elif job.state == 'error' %}
+      <p class="notice job-error">Failed: {{ label }} — {{ job.error }}</p>
+    {% endif %}
+  {% endif %}
+{% endmacro %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>arXiv Recommender</title>
+  <link rel="stylesheet" href="/static/style.css">
+  {% if jobs and (
+    (jobs.ingest and jobs.ingest.state == 'running') or
+    (jobs.embed and jobs.embed.state == 'running') or
+    (jobs.fetch and jobs.fetch.state == 'running')
+  ) %}
+  <meta http-equiv="refresh" content="2">
+  {% endif %}
+</head>
+<body>
+  <h1>arXiv Recommender</h1>
+
+  <section class="maintenance">
+    <h2>Library maintenance</h2>
+    <form method="post" action="/jobs/ingest">
+      <button type="submit" {% if jobs.ingest and jobs.ingest.state == 'running' %}disabled{% endif %}>
+        Run ingest
+      </button>
+    </form>
+    {{ job_banner('ingest', 'ingest', jobs.ingest) }}
+    <form method="post" action="/jobs/embed">
+      <button type="submit" {% if jobs.embed and jobs.embed.state == 'running' %}disabled{% endif %}>
+        Run embed
+      </button>
+    </form>
+    {{ job_banner('embed', 'embed', jobs.embed) }}
+    <form method="post" action="/jobs/fetch">
+      <button type="submit" {% if jobs.fetch and jobs.fetch.state == 'running' %}disabled{% endif %}>
+        Run fetch
+      </button>
+    </form>
+    {{ job_banner('fetch', 'fetch', jobs.fetch) }}
+  </section>
+
+  <form method="get" action="/">
+    <label>
+      Categories (comma-separated)
+      <input type="text" name="cat" value="{{ cat|join(',') }}" placeholder="cs.LG,cs.AI">
+    </label>
+    <label>
+      Days back
+      <input type="number" name="days" min="1" value="{{ days if days is not none else '' }}">
+    </label>
+    <label>
+      Min score
+      <input type="number" step="0.01" min="-1" max="1" name="min_score" value="{{ min_score }}">
+    </label>
+    <label>
+      Top N
+      <input type="number" min="1" max="200" name="top" value="{{ top }}">
+    </label>
+    <button type="submit">Filter</button>
+  </form>
+
+  {% if error %}
+  <p class="notice">{{ error }}</p>
+  {% elif recs %}
+  <p class="count">{{ recs|length }} papers</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Title</th>
+        <th>Authors</th>
+        <th>Score</th>
+        <th>Published</th>
+        <th>Categories</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in recs %}
+      <tr>
+        <td><a href="https://arxiv.org/abs/{{ r.arxiv_id }}" target="_blank" rel="noopener">{{ r.title }}</a></td>
+        <td>{{ r.authors|join(', ') }}</td>
+        <td>{{ '%.3f'|format(r.score) }}</td>
+        <td>{{ r.published_date }}</td>
+        <td>{{ r.categories|join(', ') }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="notice">
+    No papers matched — try widening days or lowering min_score.
+    If this is a fresh install, run <code>arxiv-ingest</code> and
+    <code>arxiv-embed</code> first to build a library profile.
+  </p>
+  {% endif %}
+</body>
+</html>
